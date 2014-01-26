@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"io"
 	"github.com/gorilla/mux"
 	"io/ioutil"
     "math/rand"
@@ -76,6 +77,34 @@ func New(path, listen string) (*Server, error) {
 // HandleFunc() interface.
 func (s *Server) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request)) {
         s.router.HandleFunc(pattern, handler)
+}
+
+// Leader returns the current leader.
+func (s *Server) Leader() string {
+        l := s.raftServer.Leader()
+
+        if l == "" {
+                // We are a single node cluster, we are the leader
+                return s.raftServer.Name()
+        }
+
+        return l
+}
+
+// Leader returns the current leader.
+func (s *Server) LeaderConnectionString() string {
+	name := s.Leader()
+	for n, peer := range s.raftServer.Peers() {
+		if n == name {
+			return peer.ConnectionString
+		}
+	}
+    return ""
+}
+
+// IsLeader returns true if this instance the current leader.
+func (s *Server) IsLeader() bool {
+        return s.raftServer.State() == raft.Leader
 }
 
 // Starts the server.
@@ -194,9 +223,6 @@ func (s *Server) joinHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	log.Printf(s.raftServer.State())
-	log.Printf("Got join request!: %s",command)
-
 	result, err := s.raftServer.Do(command)
 	if err != nil {
 		log.Printf("Unable to handle join: %s", err)
@@ -209,13 +235,25 @@ func (s *Server) joinHandler(w http.ResponseWriter, req *http.Request) {
         w.WriteHeader(http.StatusOK)
         w.Write(b)
 	}
-
-	log.Printf("Join done: %s",command)
 }
 
 // This is the only user-facing function, and accordingly the body is
 // a raw string rather than JSON.
 func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
+	// Redirect if we are not the leader
+	if !s.IsLeader() {
+		for s.Leader() == "" {}
+
+		//log.Printf("Not the leader, redirecting to %s.",s.LeaderConnectionString())
+		res, err := s.client.SafePost(s.LeaderConnectionString(), req.URL.Path, req.Body)
+		if err != nil {
+			http.Error(w,err.Error(), http.StatusBadRequest)
+			return 
+		}
+		io.Copy(w,res)
+		return
+	}
+
 	query, err := ioutil.ReadAll(req.Body)
 	if err != nil {
 		log.Printf("Couldn't read body: %s", err)
@@ -224,6 +262,7 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 
     // Execute the command against the Raft server.
     res, err := s.raftServer.Do(NewWriteCommand(string(query)))
+
     if err != nil {
 		log.Printf("Unable to handle execute request: %s", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
