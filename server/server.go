@@ -278,7 +278,7 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
     for {
     	count += 1
     	if count > 1 {
-     	   time.Sleep(10 * time.Millisecond)
+     	   time.Sleep(100 * time.Millisecond)
 	    }
 
 		// Redirect if we are not the leader
