@@ -43,7 +43,6 @@ func getExitstatus(err error) int {
 }
 
 func (sql *SQL) Execute(tag string, command string) (*Output, error) {
-	// TODO: make sure I can catch non-lock issuez
 	sql.mutex.Lock()
 	defer sql.mutex.Unlock()
 

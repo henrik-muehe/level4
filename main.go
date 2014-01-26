@@ -4,20 +4,23 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+    "math/rand"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"stripe-ctf.com/sqlcluster/log"
 	"stripe-ctf.com/sqlcluster/server"
+	"github.com/goraft/raft"
 	"syscall"
 	"time"
 )
 
 func main() {
-	var verbose bool
+	var raftdebug, verbose bool
 	var listen, join, directory string
 
 	flag.BoolVar(&verbose, "v", false, "Enable debug output")
+	flag.BoolVar(&raftdebug, "r", false, "Enable raft debugging")
 	flag.StringVar(&listen, "l", "127.0.0.1:4000", "Socket to listen on (Unix or TCP)")
 	flag.StringVar(&join, "join", "", "Cluster to join")
 	flag.StringVar(&directory, "d", "", "Storage directory")
@@ -104,6 +107,12 @@ OPTIONS:
 			}
 		}
 	}()
+
+    rand.Seed(time.Now().UnixNano())
+	raft.RegisterCommand(&server.WriteCommand{})
+	if (raftdebug) {
+		raft.SetLogLevel(raft.Debug)
+	}
 
 	// Start the server
 	go func() {
