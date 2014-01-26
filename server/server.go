@@ -13,6 +13,7 @@ import (
 	"stripe-ctf.com/sqlcluster/transport"
 	"stripe-ctf.com/sqlcluster/util"
 	"encoding/json"
+	"time"
 )
 
 type Server struct {
@@ -169,11 +170,16 @@ func (s *Server) Join(primary string) error {
             ConnectionString: s.connectionString(),
     }
 
-	b := util.JSONEncode(command)
-    _, err = s.client.SafePost(cs, "/join", b)
-    if err != nil {
-            return err
-    }
+    for {
+		b := util.JSONEncode(command)
+	    _, err = s.client.SafePost(cs, "/join", b)
+	    if err != nil {
+			log.Printf("Unable to join cluster: %s", err)
+			time.Sleep(1 * time.Second)
+			continue
+	    }
+	    return nil
+	}
 
     return nil
 }
