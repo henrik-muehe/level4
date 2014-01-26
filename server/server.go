@@ -308,8 +308,9 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 
 			if res.StatusCode != 200 {
 				// Return error conditions to caller
-				http.Error(w,string(query), http.StatusBadRequest)
-				return
+				//http.Error(w,string(query), http.StatusBadRequest)
+				//return
+				continue
 			}	
 
 			// Successfully forwarded, we are done		
@@ -323,13 +324,13 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 		    res, err := s.raftServer.Do(NewWriteCommand(string(query)))
 
 	    	if err != nil {
-	    		if (forwarded) {  s.sql.UpdateForward(id, 400, err.Error()) }
+	    		//if (forwarded) {  s.sql.UpdateForward(id, 400, err.Error()) }
 
 				//log.Printf("Node %s failed at request %s",s.connectionString(), id)
 	    		// Send error if we can not currently process the request
 				//log.Printf("Unable to handle execute request: %s", err)
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
+				//http.Error(w, err.Error(), http.StatusBadRequest)
+				continue
 	    	}
 
     		if (forwarded) { s.sql.UpdateForward(id, 200, string(res.([]byte))) }
