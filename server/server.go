@@ -112,6 +112,9 @@ func (s *Server) ListenAndServe(leader string) error {
 	var err error
 
     log.Printf("Initializing Raft Server: %s", s.path)
+             
+time.Sleep(500 * time.Millisecond)
+
 
     // Initialize and start Raft server.
     transporter := raft.NewHTTPTransporter("/raft")
@@ -121,6 +124,10 @@ func (s *Server) ListenAndServe(leader string) error {
             log.Fatal(err)
     }
     transporter.Install(s.raftServer, s)
+
+
+	s.raftServer.SetHeartbeatTimeout(100 * time.Millisecond)
+s.raftServer.SetElectionTimeout(200 * time.Millisecond)
     s.raftServer.Start()
 
     if leader != "" {
@@ -170,7 +177,7 @@ func (s *Server) ListenAndServe(leader string) error {
 
 	s.router.HandleFunc("/sql", s.sqlHandler).Methods("POST")
 	s.router.HandleFunc("/join", s.joinHandler).Methods("POST")
-	//s.router.HandleFunc("/status?id={id}", s.statusHandler).Methods("POST")
+	s.router.HandleFunc("/status", s.statusHandler).Methods("POST")
 
 	// Start Unix transport
 	l, err := transport.Listen(s.listen)
@@ -239,11 +246,17 @@ func (s *Server) joinHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *Server) statusHandler(w http.ResponseWriter, req *http.Request) {
-	vars := mux.Vars(req)
-	f,ok := s.sql.GetForward(vars["id"])
+	id := req.URL.Query().Get("id")
+	f,ok := s.sql.GetForward(id)
 	if !ok {
+		log.Printf("INVISIBLE AFTER COMM ERROR %d",id)
 		w.WriteHeader(404)
 	} else {
+		if f.Status == 1 {
+			log.Printf("STILL HARD AT WORK AFTER COMM ERROR %d",id)
+		}
+		log.Printf("TERMINATED AFTER COMM ERROR %d",id)
+		log.Printf(f.Body)
 		w.WriteHeader(f.Status)
 		w.Write([]byte(f.Body))
 	}
@@ -260,11 +273,11 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 		// This is a client talking to us, assign a unique id
 		id = fmt.Sprintf("%s-%d", s.connectionString(), s.counter)
 		s.counter += 1
-		log.Printf("Received request %s",id)
+		//log.Printf("Received request %s",id)
 	} else {
 		// This is a forwarded request
 		forwarded = true
-		log.Printf("Received forwarded request %s",id)
+		//log.Printf("Received forwarded request %s",id)
 		s.sql.UpdateForward(id, 1, "")
 	}
 
@@ -275,14 +288,17 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	var count int = 0
+	delay  := 200 * time.Millisecond
     for {
     	count += 1
     	if count > 1 {
-     	   time.Sleep(100 * time.Millisecond)
+    		log.Printf("Retry count for %s is %d",id,count)
+     	   	time.Sleep(delay)     	 
+     	   	if (delay < 1*time.Second) { delay *= 2 } 
 	    }
 
 		// Redirect if we are not the leader
-		if !s.IsLeader() {
+		if !s.IsLeader() && !forwarded {
 			// Find leader and make sure we do not redirect back to us
 			target := s.LeaderConnectionString()
 			if (target == s.name) { continue }
@@ -297,9 +313,12 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 			if err != nil {
 				// Communication failed, we have to check if a) the request got through
 				// and b) we have to find out what the result is
+				log.Printf("COMM ERROR")
 				for {
-					res, err = s.client.RawPost(target, fmt.Sprintf("/status?id=%s",id), nil)
+		     	   	time.Sleep(100 * time.Millisecond)
+					res, err = s.client.RawPost(target, fmt.Sprintf("/status?id=%s",id), bytes.NewBuffer([]byte("bla")))
 					if err == nil && (res.StatusCode > 10) {
+						log.Printf("COMM ERROR STATUS: %d", res.StatusCode)
 						break; 
 					}
 				}
@@ -308,13 +327,17 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 
 			if res.StatusCode != 200 {
 				// Return error conditions to caller
-				//http.Error(w,string(query), http.StatusBadRequest)
-				//return
-				continue
+				// http.Error(w,string(query), http.StatusBadRequest)
+				// return
+				id = id + "r"
+				continue;
 			}	
 
 			// Successfully forwarded, we are done		
 			body,err := ioutil.ReadAll(res.Body)
+			if err != nil {
+				//log.Printf("FUCK IT")
+			}
 			w.Write(body)
 
 			return
@@ -324,18 +347,25 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 		    res, err := s.raftServer.Do(NewWriteCommand(string(query)))
 
 	    	if err != nil {
+	    		if (forwarded) {
+					s.sql.UpdateForward(id, 400, err.Error())
+	    			http.Error(w, err.Error(), http.StatusBadRequest)
+	    			return
+	    		}
 	    		//if (forwarded) {  s.sql.UpdateForward(id, 400, err.Error()) }
 
 				//log.Printf("Node %s failed at request %s",s.connectionString(), id)
 	    		// Send error if we can not currently process the request
 				//log.Printf("Unable to handle execute request: %s", err)
 				//http.Error(w, err.Error(), http.StatusBadRequest)
-				continue
+				//return
+				continue;
 	    	}
 
     		if (forwarded) { s.sql.UpdateForward(id, 200, string(res.([]byte))) }
 			//log.Printf("Node %s finished request %s",s.connectionString(), id)
-			//log.Printf(string(res.([]byte)))
+
+		    //log.Printf(string(res.([]byte)))
 
 	    	w.Write(res.([]byte))
 			return
