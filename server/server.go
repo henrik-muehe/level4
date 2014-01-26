@@ -15,7 +15,6 @@ import (
 	"stripe-ctf.com/sqlcluster/util"
 	"encoding/json"
 	"time"
-	"strconv"
 )
 
 type Server struct {
@@ -171,9 +170,7 @@ func (s *Server) ListenAndServe(leader string) error {
 
 	s.router.HandleFunc("/sql", s.sqlHandler).Methods("POST")
 	s.router.HandleFunc("/join", s.joinHandler).Methods("POST")
-
-	s.router.HandleFunc("/forward", s.forwardHandler).Methods("POST")
-	s.router.HandleFunc("/ack", s.ackHandler).Methods("GET")
+	//s.router.HandleFunc("/status?id={id}", s.statusHandler).Methods("POST")
 
 	// Start Unix transport
 	l, err := transport.Listen(s.listen)
@@ -241,21 +238,34 @@ func (s *Server) joinHandler(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+func (s *Server) statusHandler(w http.ResponseWriter, req *http.Request) {
+	vars := mux.Vars(req)
+	f,ok := s.sql.GetForward(vars["id"])
+	if !ok {
+		w.WriteHeader(404)
+	} else {
+		w.WriteHeader(f.Status)
+		w.Write([]byte(f.Body))
+	}
+}
+
+
 // This is the only user-facing function, and accordingly the body is
 // a raw string rather than JSON.
 func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
-	var forwards int = 0
-	forwardsString := req.URL.Query().Get("forwards")
-	if forwardsString != "" {
-		forwards,_ = strconv.Atoi(forwardsString)
-	}
-
 	var id string;
+	var forwarded bool;
 	id = req.URL.Query().Get("id")
 	if id == "" {
+		// This is a client talking to us, assign a unique id
 		id = fmt.Sprintf("%s-%d", s.connectionString(), s.counter)
 		s.counter += 1
 		log.Printf("Received request %s",id)
+	} else {
+		// This is a forwarded request
+		forwarded = true
+		log.Printf("Received forwarded request %s",id)
+		s.sql.UpdateForward(id, 1, "")
 	}
 
 	query, err := ioutil.ReadAll(req.Body)
@@ -264,17 +274,12 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 
-	count := 0
+	var count int = 0
     for {
-    	// Sleep if we are retrying
     	count += 1
     	if count > 1 {
-    		time.Sleep(50 * time.Millisecond)
-    	}
-    	if count == 2 {
-			http.Error(w,"too many retries", http.StatusBadRequest)
-			break
-    	}
+     	   time.Sleep(10 * time.Millisecond)
+	    }
 
 		// Redirect if we are not the leader
 		if !s.IsLeader() {
@@ -283,21 +288,24 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 			if (target == s.name) { continue }
 			if (target == "") { continue }
 
-			log.Printf("Node %s forwards request %s",s.connectionString(), id)
+			//log.Printf("Node %s forwards request %s",s.connectionString(), id)
 
 			// Redirect
-			res, err := s.client.RawPost(target, fmt.Sprintf("/sql?forwards=%d&id=%s",forwards+1,id), bytes.NewBuffer(query))
-
-			log.Printf("Node %s receives res from forward request %s",s.connectionString(), id)
-
+			res, err := s.client.RawPost(target, fmt.Sprintf("/sql?id=%s",id), bytes.NewBuffer(query))
 
 			// Retry on communication error
 			if err != nil {
-			log.Printf("Err: %s", err.Error())
-				continue
+				// Communication failed, we have to check if a) the request got through
+				// and b) we have to find out what the result is
+				for {
+					res, err = s.client.RawPost(target, fmt.Sprintf("/status?id=%s",id), nil)
+					if err == nil && (res.StatusCode > 10) {
+						break; 
+					}
+				}
 			}
-
 			defer res.Body.Close()
+
 			if res.StatusCode != 200 {
 				// Return error conditions to caller
 				http.Error(w,string(query), http.StatusBadRequest)
@@ -310,46 +318,25 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 
 			return
 		} else {
-			log.Printf("Node %s handles request %s",s.connectionString(), id)
+			//log.Printf("Node %s handles request %s",s.connectionString(), id)
 		    // Execute the command against the Raft server if we are the leader
 		    res, err := s.raftServer.Do(NewWriteCommand(string(query)))
 
 	    	if err != nil {
-				log.Printf("Node %s failed at request %s",s.connectionString(), id)
+	    		if (forwarded) {  s.sql.UpdateForward(id, 400, err.Error()) }
+
+				//log.Printf("Node %s failed at request %s",s.connectionString(), id)
 	    		// Send error if we can not currently process the request
-				log.Printf("Unable to handle execute request: %s", err)
+				//log.Printf("Unable to handle execute request: %s", err)
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 	    	}
-			log.Printf("Node %s finished request %s",s.connectionString(), id)
 
-		    log.Printf(string(res.([]byte)))
-		    log.Printf("Total forwards: %d",forwards)
-		    //if res != nil {
-	    	_, err = w.Write(res.([]byte))
-	    	if err != nil {
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    		log.Printf("OH MY")
-	    	}
+    		if (forwarded) { s.sql.UpdateForward(id, 200, string(res.([]byte))) }
+			//log.Printf("Node %s finished request %s",s.connectionString(), id)
+			//log.Printf(string(res.([]byte)))
 
-	    	//}
+	    	w.Write(res.([]byte))
 			return
 		}
 

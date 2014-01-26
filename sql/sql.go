@@ -9,9 +9,15 @@ import (
 	"syscall"
 )
 
+type Forward struct {
+	Status int
+	Body string
+}
+
 type SQL struct {
 	path           string
 	sequenceNumber int
+	forwards 		map[string]Forward	
 	mutex          sync.Mutex
 }
 
@@ -24,6 +30,7 @@ type Output struct {
 func NewSQL(path string) *SQL {
 	sql := &SQL{
 		path: path,
+		forwards: make(map[string]Forward),
 	}
 	return sql
 }
@@ -40,6 +47,19 @@ func getExitstatus(err error) int {
 	}
 
 	return status.ExitStatus()
+}
+
+func (sql *SQL) UpdateForward(id string, status int, body string) {
+	sql.mutex.Lock()
+	defer sql.mutex.Unlock()
+	sql.forwards[id]=Forward{ status, body }
+}
+
+func (sql *SQL) GetForward(id string) (Forward,bool) {
+	sql.mutex.Lock()
+	defer sql.mutex.Unlock()
+	val,ok := sql.forwards[id];
+	return val,ok
 }
 
 func (sql *SQL) Execute(tag string, command string) (*Output, error) {
