@@ -1,8 +1,8 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
-	"io"
 	"github.com/gorilla/mux"
 	"io/ioutil"
     "math/rand"
@@ -15,18 +15,19 @@ import (
 	"stripe-ctf.com/sqlcluster/util"
 	"encoding/json"
 	"time"
+	"strconv"
 )
 
 type Server struct {
 	name       string
 	path       string
 	listen     string
+	counter    int
     raftServer raft.Server
 	router     *mux.Router
 	httpServer *http.Server
 	sql        *sql.SQL
 	client     *transport.Client
-	cluster    *Cluster
 }
 
 type Join struct {
@@ -171,6 +172,9 @@ func (s *Server) ListenAndServe(leader string) error {
 	s.router.HandleFunc("/sql", s.sqlHandler).Methods("POST")
 	s.router.HandleFunc("/join", s.joinHandler).Methods("POST")
 
+	s.router.HandleFunc("/forward", s.forwardHandler).Methods("POST")
+	s.router.HandleFunc("/ack", s.ackHandler).Methods("GET")
+
 	// Start Unix transport
 	l, err := transport.Listen(s.listen)
 	if err != nil {
@@ -240,18 +244,18 @@ func (s *Server) joinHandler(w http.ResponseWriter, req *http.Request) {
 // This is the only user-facing function, and accordingly the body is
 // a raw string rather than JSON.
 func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
-	// Redirect if we are not the leader
-	if !s.IsLeader() {
-		for s.Leader() == "" {}
+	var forwards int = 0
+	forwardsString := req.URL.Query().Get("forwards")
+	if forwardsString != "" {
+		forwards,_ = strconv.Atoi(forwardsString)
+	}
 
-		//log.Printf("Not the leader, redirecting to %s.",s.LeaderConnectionString())
-		res, err := s.client.SafePost(s.LeaderConnectionString(), req.URL.Path, req.Body)
-		if err != nil {
-			http.Error(w,err.Error(), http.StatusBadRequest)
-			return 
-		}
-		io.Copy(w,res)
-		return
+	var id string;
+	id = req.URL.Query().Get("id")
+	if id == "" {
+		id = fmt.Sprintf("%s-%d", s.connectionString(), s.counter)
+		s.counter += 1
+		log.Printf("Received request %s",id)
 	}
 
 	query, err := ioutil.ReadAll(req.Body)
@@ -260,15 +264,94 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 
-    // Execute the command against the Raft server.
-    res, err := s.raftServer.Do(NewWriteCommand(string(query)))
+	count := 0
+    for {
+    	// Sleep if we are retrying
+    	count += 1
+    	if count > 1 {
+    		time.Sleep(50 * time.Millisecond)
+    	}
+    	if count == 2 {
+			http.Error(w,"too many retries", http.StatusBadRequest)
+			break
+    	}
 
-    if err != nil {
-		log.Printf("Unable to handle execute request: %s", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
-    }
+		// Redirect if we are not the leader
+		if !s.IsLeader() {
+			// Find leader and make sure we do not redirect back to us
+			target := s.LeaderConnectionString()
+			if (target == s.name) { continue }
+			if (target == "") { continue }
 
-    if res != nil {
-    	w.Write(res.([]byte))
+			log.Printf("Node %s forwards request %s",s.connectionString(), id)
+
+			// Redirect
+			res, err := s.client.RawPost(target, fmt.Sprintf("/sql?forwards=%d&id=%s",forwards+1,id), bytes.NewBuffer(query))
+
+			log.Printf("Node %s receives res from forward request %s",s.connectionString(), id)
+
+
+			// Retry on communication error
+			if err != nil {
+			log.Printf("Err: %s", err.Error())
+				continue
+			}
+
+			defer res.Body.Close()
+			if res.StatusCode != 200 {
+				// Return error conditions to caller
+				http.Error(w,string(query), http.StatusBadRequest)
+				return
+			}	
+
+			// Successfully forwarded, we are done		
+			body,err := ioutil.ReadAll(res.Body)
+			w.Write(body)
+
+			return
+		} else {
+			log.Printf("Node %s handles request %s",s.connectionString(), id)
+		    // Execute the command against the Raft server if we are the leader
+		    res, err := s.raftServer.Do(NewWriteCommand(string(query)))
+
+	    	if err != nil {
+				log.Printf("Node %s failed at request %s",s.connectionString(), id)
+	    		// Send error if we can not currently process the request
+				log.Printf("Unable to handle execute request: %s", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+	    	}
+			log.Printf("Node %s finished request %s",s.connectionString(), id)
+
+		    log.Printf(string(res.([]byte)))
+		    log.Printf("Total forwards: %d",forwards)
+		    //if res != nil {
+	    	_, err = w.Write(res.([]byte))
+	    	if err != nil {
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    		log.Printf("OH MY")
+	    	}
+
+	    	//}
+			return
+		}
+
     }
 }

@@ -48,7 +48,7 @@ func (sql *SQL) Execute(tag string, command string) (*Output, error) {
 
 	defer func() { sql.sequenceNumber += 1 }()
 	if tag == "primary" || log.Verbose() {
-		log.Printf("[%s] [%d] Executing %#v", tag, sql.sequenceNumber, command)
+		//log.Printf("[%s] [%d] Executing %#v", tag, sql.sequenceNumber, command)
 	}
 
 	subprocess := exec.Command("sqlite3", sql.path)

@@ -43,6 +43,7 @@ SQLite error: %s`
 
                 return nil, errors.New(msg)
         }
+        fmt.Println("SN: %d",output.SequenceNumber)
 
         formatted := fmt.Sprintf("SequenceNumber: %d\n%s",
                 output.SequenceNumber, output.Stdout)
