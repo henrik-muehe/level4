@@ -113,7 +113,7 @@ func (s *Server) ListenAndServe(leader string) error {
 
     log.Printf("Initializing Raft Server: %s", s.path)
              
-time.Sleep(500 * time.Millisecond)
+	//time.Sleep(500 * time.Millisecond)
 
 
     // Initialize and start Raft server.
@@ -126,9 +126,9 @@ time.Sleep(500 * time.Millisecond)
     transporter.Install(s.raftServer, s)
 
 
-	s.raftServer.SetHeartbeatTimeout(100 * time.Millisecond)
-s.raftServer.SetElectionTimeout(200 * time.Millisecond)
     s.raftServer.Start()
+	s.raftServer.SetHeartbeatTimeout(100 * time.Millisecond)
+	s.raftServer.SetElectionTimeout(300 * time.Millisecond)
 
     if leader != "" {
             // Join to leader if specified.
