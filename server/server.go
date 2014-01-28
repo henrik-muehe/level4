@@ -22,6 +22,7 @@ type Server struct {
 	path       string
 	listen     string
 	counter    int
+	received   map[string]bool
     raftServer raft.Server
 	router     *mux.Router
 	httpServer *http.Server
@@ -53,6 +54,7 @@ func New(path, listen string) (*Server, error) {
 	util.EnsureAbsent(sqlPath)
 
     s := &Server{
+    	received: make(map[string]bool),
 		path:    path,
 		listen:  listen,
 		sql:     sql.NewSQL(sqlPath),
@@ -177,7 +179,6 @@ func (s *Server) ListenAndServe(leader string) error {
 
 	s.router.HandleFunc("/sql", s.sqlHandler).Methods("POST")
 	s.router.HandleFunc("/join", s.joinHandler).Methods("POST")
-	s.router.HandleFunc("/status", s.statusHandler).Methods("POST")
 
 	// Start Unix transport
 	l, err := transport.Listen(s.listen)
@@ -245,131 +246,84 @@ func (s *Server) joinHandler(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func (s *Server) statusHandler(w http.ResponseWriter, req *http.Request) {
-	id := req.URL.Query().Get("id")
-	f,ok := s.sql.GetForward(id)
-	if !ok {
-		log.Printf("INVISIBLE AFTER COMM ERROR %d",id)
-		w.WriteHeader(404)
-	} else {
-		if f.Status == 1 {
-			log.Printf("STILL HARD AT WORK AFTER COMM ERROR %d",id)
-		}
-		log.Printf("TERMINATED AFTER COMM ERROR %d",id)
-		log.Printf(f.Body)
-		w.WriteHeader(f.Status)
-		w.Write([]byte(f.Body))
-	}
-}
-
-
 // This is the only user-facing function, and accordingly the body is
 // a raw string rather than JSON.
 func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
+	// Assign id
 	var id string;
 	var forwarded bool;
 	id = req.URL.Query().Get("id")
+	resChannel := make(chan string)
 	if id == "" {
 		// This is a client talking to us, assign a unique id
 		id = fmt.Sprintf("%s-%d", s.connectionString(), s.counter)
 		s.counter += 1
-		//log.Printf("Received request %s",id)
+
+
+		forwarded = false
+		s.sql.AddClientRecord(id,resChannel);
+
+		log.Printf("Received request %s",id)
 	} else {
 		// This is a forwarded request
 		forwarded = true
-		//log.Printf("Received forwarded request %s",id)
-		s.sql.UpdateForward(id, 1, "")
+
+		if val, ok := s.received[id]; ok && val {
+			return
+		}
+
+		log.Printf("Received forwarded request %s",id)
+		s.received[id]=true
+        w.WriteHeader(http.StatusOK)
 	}
 
+	// Read body
 	query, err := ioutil.ReadAll(req.Body)
 	if err != nil {
 		log.Printf("Couldn't read body: %s", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 
-	var count int = 0
-	delay  := 200 * time.Millisecond
-    for {
-    	count += 1
-    	if count > 1 {
-    		log.Printf("Retry count for %s is %d",id,count)
-     	   	time.Sleep(delay)     	 
-     	   	if (delay < 1*time.Second) { delay *= 2 } 
-	    }
+	// Forward if we are not the leader
+	go func() {
+		var count int = 0
+		delay  := 200 * time.Millisecond
+	    for {
+	    	count += 1
+	    	if count > 1 {
+	    		log.Printf("Retry count for %s is %d",id,count)
+	     	   	time.Sleep(delay)     	 
+	     	   	if (delay < 1*time.Second) { delay *= 2 } 
+		    }
 
-		// Redirect if we are not the leader
-		if !s.IsLeader() && !forwarded {
-			// Find leader and make sure we do not redirect back to us
-			target := s.LeaderConnectionString()
-			if (target == s.name) { continue }
-			if (target == "") { continue }
+			// Redirect if we are not the leader
+			if !s.IsLeader() {
+				// Find leader and make sure we do not redirect back to us
+				target := s.LeaderConnectionString()
+				if (target == "") { continue }
+				if (target == s.name) { continue }
 
-			//log.Printf("Node %s forwards request %s",s.connectionString(), id)
-
-			// Redirect
-			res, err := s.client.RawPost(target, fmt.Sprintf("/sql?id=%s",id), bytes.NewBuffer(query))
-
-			// Retry on communication error
-			if err != nil {
-				// Communication failed, we have to check if a) the request got through
-				// and b) we have to find out what the result is
-				log.Printf("COMM ERROR")
+				// Redirect
 				for {
-		     	   	time.Sleep(100 * time.Millisecond)
-					res, err = s.client.RawPost(target, fmt.Sprintf("/status?id=%s",id), bytes.NewBuffer([]byte("bla")))
-					if err == nil && (res.StatusCode > 10) {
-						log.Printf("COMM ERROR STATUS: %d", res.StatusCode)
-						break; 
-					}
+					res, err := s.client.RawPost(target, fmt.Sprintf("/sql?id=%s",id), bytes.NewBuffer(query))
+					if err == nil && res.StatusCode == 200 { break }
+		     	   	time.Sleep(50 * time.Millisecond)
 				}
+				s.received[id] = false
+				break
+			} else {
+			    _, err := s.raftServer.Do(NewWriteCommand(id,string(query)))
+
+			    // Retry on error
+		    	if err != nil { continue; }
+		    	break
 			}
-			defer res.Body.Close()
+	    }
+    }()
 
-			if res.StatusCode != 200 {
-				// Return error conditions to caller
-				// http.Error(w,string(query), http.StatusBadRequest)
-				// return
-				id = id + "r"
-				continue;
-			}	
-
-			// Successfully forwarded, we are done		
-			body,err := ioutil.ReadAll(res.Body)
-			if err != nil {
-				//log.Printf("FUCK IT")
-			}
-			w.Write(body)
-
-			return
-		} else {
-			//log.Printf("Node %s handles request %s",s.connectionString(), id)
-		    // Execute the command against the Raft server if we are the leader
-		    res, err := s.raftServer.Do(NewWriteCommand(string(query)))
-
-	    	if err != nil {
-	    		if (forwarded) {
-					s.sql.UpdateForward(id, 400, err.Error())
-	    			http.Error(w, err.Error(), http.StatusBadRequest)
-	    			return
-	    		}
-	    		//if (forwarded) {  s.sql.UpdateForward(id, 400, err.Error()) }
-
-				//log.Printf("Node %s failed at request %s",s.connectionString(), id)
-	    		// Send error if we can not currently process the request
-				//log.Printf("Unable to handle execute request: %s", err)
-				//http.Error(w, err.Error(), http.StatusBadRequest)
-				//return
-				continue;
-	    	}
-
-    		if (forwarded) { s.sql.UpdateForward(id, 200, string(res.([]byte))) }
-			//log.Printf("Node %s finished request %s",s.connectionString(), id)
-
-		    //log.Printf(string(res.([]byte)))
-
-	    	w.Write(res.([]byte))
-			return
-		}
-
+    if !forwarded {
+		response := <- resChannel
+		log.Printf("Responding for id %s",id)
+		w.Write([]byte(response))
     }
 }

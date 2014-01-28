@@ -10,12 +10,14 @@ import (
 
 // This command writes a value to a key.
 type WriteCommand struct {
-        Query string `json:"query"`
+        Id      string  `json:"id"`
+        Query   string  `json:"query"`
 }
 
 // Creates a new write command.
-func NewWriteCommand(query string) *WriteCommand {
+func NewWriteCommand(id string, query string) *WriteCommand {
         return &WriteCommand{
+                Id:      id,
                 Query:   query,
         }
 }
@@ -47,6 +49,8 @@ SQLite error: %s`
 
         formatted := fmt.Sprintf("SequenceNumber: %d\n%s",
                 output.SequenceNumber, output.Stdout)
+
+        sql.Respond(c.Id, []byte(formatted))
 
         return []byte(formatted), nil
 }

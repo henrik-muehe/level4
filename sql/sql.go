@@ -9,16 +9,16 @@ import (
 	"syscall"
 )
 
-type Forward struct {
-	Status int
-	Body string
+type ClientRecord struct {
+	id		string
+	c 		chan string
 }
 
 type SQL struct {
-	path           string
-	sequenceNumber int
-	forwards 		map[string]Forward	
-	mutex          sync.Mutex
+	path           	string
+	sequenceNumber 	int
+	clients 		map[string]ClientRecord
+	mutex          	sync.Mutex
 }
 
 type Output struct {
@@ -30,7 +30,7 @@ type Output struct {
 func NewSQL(path string) *SQL {
 	sql := &SQL{
 		path: path,
-		forwards: make(map[string]Forward),
+		clients: make(map[string]ClientRecord),
 	}
 	return sql
 }
@@ -49,17 +49,20 @@ func getExitstatus(err error) int {
 	return status.ExitStatus()
 }
 
-func (sql *SQL) UpdateForward(id string, status int, body string) {
+func (sql *SQL) AddClientRecord(id string, c chan string) {
 	sql.mutex.Lock()
 	defer sql.mutex.Unlock()
-	sql.forwards[id]=Forward{ status, body }
+	sql.clients[id]=ClientRecord{ id, c }
 }
 
-func (sql *SQL) GetForward(id string) (Forward,bool) {
+func (sql *SQL) Respond(id string, output []byte) {
 	sql.mutex.Lock()
 	defer sql.mutex.Unlock()
-	val,ok := sql.forwards[id];
-	return val,ok
+
+	if record, ok := sql.clients[id]; ok {
+		log.Println("Respond called for %s", id);
+		record.c <- string(output);
+	}
 }
 
 func (sql *SQL) Execute(tag string, command string) (*Output, error) {
