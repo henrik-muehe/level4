@@ -113,7 +113,7 @@ OPTIONS:
 	if (raftdebug) {
 		raft.SetLogLevel(raft.Debug)
 	}
-//		raft.SetLogLevel(raft.Debug)
+//		raft.SetLogLevel(raft.Trace)
 
 	// Start the server
 	go func() {

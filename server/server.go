@@ -48,6 +48,11 @@ type ReplicateResponse struct {
 	Self ServerAddress `json:"self"`
 }
 
+type ServerAddress struct {
+	Name             string `json:"name"`
+	ConnectionString string `json:"address"`
+}
+
 // Creates a new server.
 func New(path, listen string) (*Server, error) {
 	sqlPath := filepath.Join(path, "storage.sql")
@@ -129,8 +134,15 @@ func (s *Server) ListenAndServe(leader string) error {
 
 
     s.raftServer.Start()
-	s.raftServer.SetHeartbeatTimeout(100 * time.Millisecond)
+	s.raftServer.SetHeartbeatTimeout(25 * time.Millisecond)
 	s.raftServer.SetElectionTimeout(300 * time.Millisecond)
+	fn := func(e raft.Event) {
+		log.Printf("%s %v -> %v\n", e.Type(), e.PrevValue(), e.Value())
+	}
+    s.raftServer.AddEventListener(raft.StateChangeEventType, fn)
+    s.raftServer.AddEventListener(raft.LeaderChangeEventType, fn)
+    s.raftServer.AddEventListener(raft.TermChangeEventType, fn)
+
 
     if leader != "" {
             // Join to leader if specified.
