@@ -135,7 +135,7 @@ func (s *Server) ListenAndServe(leader string) error {
 
     s.raftServer.Start()
 	s.raftServer.SetHeartbeatTimeout(25 * time.Millisecond)
-	s.raftServer.SetElectionTimeout(300 * time.Millisecond)
+	s.raftServer.SetElectionTimeout(150 * time.Millisecond)
 	fn := func(e raft.Event) {
 		log.Printf("%s %v -> %v\n", e.Type(), e.PrevValue(), e.Value())
 	}
@@ -299,7 +299,7 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 	// Forward if we are not the leader
 	go func() {
 		var count int = 0
-		delay  := 200 * time.Millisecond
+		delay  := 50 * time.Millisecond
 	    for {
 	    	count += 1
 	    	if count > 1 {
