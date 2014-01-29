@@ -60,15 +60,15 @@ func SetPrefix(prefix string) {
 }
 
 func Print(v ...interface{}) {
-	std.Print(v...)
+	//std.Print(v...)
 }
 
 func Printf(format string, v ...interface{}) {
-	std.Printf(format, v...)
+	//std.Printf(format, v...)
 }
 
 func Println(v ...interface{}) {
-	std.Println(v...)
+	//std.Println(v...)
 }
 
 func Fatal(v ...interface{}) {

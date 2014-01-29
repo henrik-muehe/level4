@@ -4,8 +4,8 @@ import (
         "github.com/goraft/raft"
         "stripe-ctf.com/sqlcluster/sql"
         "fmt"
-        "errors"
-        "stripe-ctf.com/sqlcluster/util"
+        "time"
+        "log"
 )
 
 // This command writes a value to a key.
@@ -27,30 +27,30 @@ func (c *WriteCommand) CommandName() string {
         return "write"
 }
 
+func trace(s string) (string, time.Time) {
+    log.Println("START:", s)
+    return s, time.Now()
+}
+
+func un(s string, startTime time.Time) {
+    endTime := time.Now()
+    log.Println("  END:", s, "ElapsedTime in seconds:", endTime.Sub(startTime))
+}
+
 // Execute an SQL statement
 func (c *WriteCommand) Apply(server raft.Server) (interface{}, error) {
         sql := server.Context().(*sql.SQL)
-        output, err := sql.Execute("primary",c.Query)
+        job := sql.Execute(c.Query)
 
-        if err != nil {
-                var msg string
-                if output != nil && len(output.Stderr) > 0 {
-                        template := `Error executing %#v (%s)
+        go func() {
+                output := []byte(<- job.OutChan)
+                seq := job.Seq
 
-SQLite error: %s`
-                        msg = fmt.Sprintf(template, c.Query, err.Error(), util.FmtOutput(output.Stderr))
-                } else {
-                        msg = err.Error()
-                }
+                formatted := fmt.Sprintf("SequenceNumber: %d\n%s",
+                        seq, output)
 
-                return nil, errors.New(msg)
-        }
-        //fmt.Println("SN: %d",output.SequenceNumber)
+                sql.Respond(c.Id, []byte(formatted))
+        }()
 
-        formatted := fmt.Sprintf("SequenceNumber: %d\n%s",
-                output.SequenceNumber, output.Stdout)
-
-        sql.Respond(c.Id, []byte(formatted))
-
-        return []byte(formatted), nil
+        return []byte(""), nil
 }

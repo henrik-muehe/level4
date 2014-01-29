@@ -1,5 +1,6 @@
 package main
 
+//import "github.com/davecheney/profile"
 import (
 	"flag"
 	"fmt"
@@ -12,10 +13,13 @@ import (
 	"stripe-ctf.com/sqlcluster/server"
 	"github.com/goraft/raft"
 	"syscall"
+	"runtime"
 	"time"
 )
 
 func main() {
+    //defer profile.Start(profile.CPUProfile).Stop()
+
 	var raftdebug, verbose bool
 	var listen, join, directory string
 
@@ -107,6 +111,8 @@ OPTIONS:
 			}
 		}
 	}()
+
+	runtime.GOMAXPROCS(4)
 
     rand.Seed(time.Now().UnixNano())
 	raft.RegisterCommand(&server.WriteCommand{})

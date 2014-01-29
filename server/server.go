@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"sync"
 	"fmt"
 	"github.com/gorilla/mux"
 	"io/ioutil"
@@ -28,6 +29,7 @@ type Server struct {
 	httpServer *http.Server
 	sql        *sql.SQL
 	client     *transport.Client
+	mutex          	sync.Mutex
 }
 
 type Join struct {
@@ -120,9 +122,6 @@ func (s *Server) ListenAndServe(leader string) error {
 
     log.Printf("Initializing Raft Server: %s", s.path)
              
-	//time.Sleep(500 * time.Millisecond)
-
-
     // Initialize and start Raft server.
     transporter := raft.NewHTTPTransporter("/raft")
     transporter.Transport.Dial = transport.UnixDialer
@@ -134,8 +133,8 @@ func (s *Server) ListenAndServe(leader string) error {
 
 
     s.raftServer.Start()
-	s.raftServer.SetHeartbeatTimeout(25 * time.Millisecond)
-	s.raftServer.SetElectionTimeout(150 * time.Millisecond)
+	s.raftServer.SetHeartbeatTimeout(1 * time.Millisecond)
+	s.raftServer.SetElectionTimeout(500 * time.Millisecond)
 	fn := func(e raft.Event) {
 		log.Printf("%s %v -> %v\n", e.Type(), e.PrevValue(), e.Value())
 	}
@@ -262,6 +261,8 @@ func (s *Server) joinHandler(w http.ResponseWriter, req *http.Request) {
 // a raw string rather than JSON.
 func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 	// Assign id
+	s.mutex.Lock()
+
 	var id string;
 	var forwarded bool;
 	id = req.URL.Query().Get("id")
@@ -281,6 +282,7 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 		forwarded = true
 
 		if val, ok := s.received[id]; ok && val {
+			s.mutex.Unlock()
 			return
 		}
 
@@ -288,6 +290,7 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 		s.received[id]=true
         w.WriteHeader(http.StatusOK)
 	}
+	s.mutex.Unlock()
 
 	// Read body
 	query, err := ioutil.ReadAll(req.Body)
@@ -305,7 +308,7 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 	    	if count > 1 {
 	    		log.Printf("Retry count for %s is %d",id,count)
 	     	   	time.Sleep(delay)     	 
-	     	   	if (delay < 1*time.Second) { delay *= 2 } 
+	     	   	if (delay < 200*time.Millisecond) { delay *= 2 } 
 		    }
 
 			// Redirect if we are not the leader
@@ -320,8 +323,11 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 					res, err := s.client.RawPost(target, fmt.Sprintf("/sql?id=%s",id), bytes.NewBuffer(query))
 					if err == nil && res.StatusCode == 200 { break }
 		     	   	time.Sleep(50 * time.Millisecond)
+		     	   	//if (delay < 200*time.Millisecond) { delay *= 2 } 
 				}
+				s.mutex.Lock()
 				s.received[id] = false
+				s.mutex.Unlock()
 				break
 			} else {
 			    _, err := s.raftServer.Do(NewWriteCommand(id,string(query)))

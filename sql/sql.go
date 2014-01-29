@@ -1,13 +1,9 @@
 package sql
 
 import (
-//	"bytes"
 	"bufio"
 	"os/exec"
-//	"strings"
-	"stripe-ctf.com/sqlcluster/log"
 	"sync"
-	"syscall"
 )
 
 type ClientRecord struct {
@@ -15,13 +11,19 @@ type ClientRecord struct {
 	c 		chan string
 }
 
+
+type Job struct {
+	Command string
+	OutChan chan string
+	Seq int
+}
+
 type SQL struct {
 	path           	string
-	sequenceNumber 	int
+	SequenceNumber 	int
 	clients 		map[string]ClientRecord
 	mutex          	sync.Mutex
-	commandChan     chan string
-	outputChan      chan string
+	commandChan     chan *Job
 }
 
 type Output struct {
@@ -34,23 +36,17 @@ func NewSQL(path string) *SQL {
 	sql := &SQL{
 		path: path,
 		clients: make(map[string]ClientRecord),
-		commandChan: make(chan string),
-		outputChan: make(chan string),
+		commandChan: make(chan *Job),
 	}
-
 
 	go func() {
 		// Sqlite memory thread
 		c := exec.Command("sqlite3","-batch")
-
 		stdin, _ := c.StdinPipe()
 		stdout, _ := c.StdoutPipe()
-		//stderr, _ := c.StderrPipe()
 
 		c.Start();
-
 		outbr := bufio.NewReader(stdout)
-		//errbr := bufio.NewReader(stderr)
 
 		readOutput := func(br *bufio.Reader) string {
 			output := ""
@@ -67,31 +63,16 @@ func NewSQL(path string) *SQL {
 		}
 
 		for {
-			command := <- sql.commandChan
-			//log.Printf("Received command: %s",command)
-			stdin.Write([]byte(command + "\nselect 'done';\n"))
+			job := <- sql.commandChan
+			stdin.Write([]byte(job.Command + "\nselect 'done';\n"))
 			output := readOutput(outbr)
-			//log.Printf("SQLITE RETURNED %s", output)
-			sql.outputChan <- output
+			job.Seq =sql.SequenceNumber
+			sql.SequenceNumber += 1
+			job.OutChan <- output
 		}
 	}()
 
-
 	return sql
-}
-
-func getExitstatus(err error) int {
-	exiterr, ok := err.(*exec.ExitError)
-	if !ok {
-		return -1
-	}
-
-	status, ok := exiterr.Sys().(syscall.WaitStatus)
-	if !ok {
-		return -1
-	}
-
-	return status.ExitStatus()
 }
 
 func (sql *SQL) AddClientRecord(id string, c chan string) {
@@ -105,23 +86,12 @@ func (sql *SQL) Respond(id string, output []byte) {
 	defer sql.mutex.Unlock()
 
 	if record, ok := sql.clients[id]; ok {
-		log.Println("Respond called for %s", id);
 		record.c <- string(output);
 	}
 }
 
-func (sql *SQL) Execute(tag string, command string) (*Output, error) {
-	sql.mutex.Lock()
-	defer sql.mutex.Unlock()
-	defer func() { sql.sequenceNumber += 1 }()
-
-	sql.commandChan <- command
-
-	output := &Output{
-		Stdout:         []byte(<- sql.outputChan),
-		Stderr:         nil,
-		SequenceNumber: sql.sequenceNumber,
-	}
-
-	return output, nil
+func (sql *SQL) Execute(command string) *Job {
+	job := &Job{command,make(chan string),-1}
+	sql.commandChan <- job
+	return job;
 }
