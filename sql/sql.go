@@ -1,9 +1,10 @@
 package sql
 
 import (
-	"bytes"
+//	"bytes"
+	"bufio"
 	"os/exec"
-	"strings"
+//	"strings"
 	"stripe-ctf.com/sqlcluster/log"
 	"sync"
 	"syscall"
@@ -19,6 +20,8 @@ type SQL struct {
 	sequenceNumber 	int
 	clients 		map[string]ClientRecord
 	mutex          	sync.Mutex
+	commandChan     chan string
+	outputChan      chan string
 }
 
 type Output struct {
@@ -31,7 +34,49 @@ func NewSQL(path string) *SQL {
 	sql := &SQL{
 		path: path,
 		clients: make(map[string]ClientRecord),
+		commandChan: make(chan string),
+		outputChan: make(chan string),
 	}
+
+
+	go func() {
+		// Sqlite memory thread
+		c := exec.Command("sqlite3","-batch")
+
+		stdin, _ := c.StdinPipe()
+		stdout, _ := c.StdoutPipe()
+		//stderr, _ := c.StderrPipe()
+
+		c.Start();
+
+		outbr := bufio.NewReader(stdout)
+		//errbr := bufio.NewReader(stderr)
+
+		readOutput := func(br *bufio.Reader) string {
+			output := ""
+			for {
+				line, _, err := br.ReadLine()
+				if err != nil {
+					panic("Unable to read from reader in SQL")
+				}
+				sline := string(line)
+				if sline == "done" { break }
+				output += sline + "\n"
+			}
+			return output
+		}
+
+		for {
+			command := <- sql.commandChan
+			//log.Printf("Received command: %s",command)
+			stdin.Write([]byte(command + "\nselect 'done';\n"))
+			output := readOutput(outbr)
+			//log.Printf("SQLITE RETURNED %s", output)
+			sql.outputChan <- output
+		}
+	}()
+
+
 	return sql
 }
 
@@ -68,44 +113,13 @@ func (sql *SQL) Respond(id string, output []byte) {
 func (sql *SQL) Execute(tag string, command string) (*Output, error) {
 	sql.mutex.Lock()
 	defer sql.mutex.Unlock()
-
 	defer func() { sql.sequenceNumber += 1 }()
-	if tag == "primary" || log.Verbose() {
-		//log.Printf("[%s] [%d] Executing %#v", tag, sql.sequenceNumber, command)
-	}
 
-	subprocess := exec.Command("sqlite3", sql.path)
-	subprocess.Stdin = strings.NewReader(command + ";")
-
-	var stdout, stderr bytes.Buffer
-	subprocess.Stdout = &stdout
-	subprocess.Stderr = &stderr
-
-	if err := subprocess.Start(); err != nil {
-		log.Panic(err)
-	}
-
-	var o, e []byte
-
-	if err := subprocess.Wait(); err != nil {
-		exitstatus := getExitstatus(err)
-		switch true {
-		case exitstatus < 0:
-			log.Panic(err)
-		case exitstatus == 1:
-			fallthrough
-		case exitstatus == 2:
-			o = stderr.Bytes()
-			e = nil
-		}
-	} else {
-		o = stdout.Bytes()
-		e = stderr.Bytes()
-	}
+	sql.commandChan <- command
 
 	output := &Output{
-		Stdout:         o,
-		Stderr:         e,
+		Stdout:         []byte(<- sql.outputChan),
+		Stderr:         nil,
 		SequenceNumber: sql.sequenceNumber,
 	}
 
