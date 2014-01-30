@@ -339,6 +339,7 @@ func (s *Server) sqlHandler(w http.ResponseWriter, req *http.Request) {
 	    }
     }()
 
+    // Respond if we orignally received the request from the client on this ndoe
     if !forwarded {
 		response := <- resChannel
 		log.Printf("Responding for id %s",id)
